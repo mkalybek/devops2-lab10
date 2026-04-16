@@ -11,19 +11,21 @@ spec:
     targetRevision: 1.11.1
     helm:
       values: |
+        # Chart explicitly recommends disabling this when installing via ArgoCD
+        # — the pre-upgrade Job fires as a PreSync hook before the chart's own
+        # ServiceAccount exists, so the Job is unschedulable.
+        # https://github.com/longhorn/charts (values.yaml, preUpgradeChecker)
+        preUpgradeChecker:
+          jobEnabled: false
+          upgradeVersionCheck: true
         defaultSettings:
           # single-node lab: one replica is enough and avoids unschedulable PVCs
           defaultReplicaCount: 1
-          # let Longhorn use the VM's root disk by default
-          createDefaultDiskLabeledNodes: false
         persistence:
           defaultClass: true
           defaultClassReplicaCount: 1
         longhornUI:
           replicas: 1
-        longhornManager:
-          # reduce footprint on a 4 GiB VM
-          priorityClass: ""
   destination:
     server: https://kubernetes.default.svc
     namespace: longhorn-system
