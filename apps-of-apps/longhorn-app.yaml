@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: longhorn
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://charts.longhorn.io
+    chart: longhorn
+    targetRevision: 1.11.1
+    helm:
+      values: |
+        defaultSettings:
+          # single-node lab: one replica is enough and avoids unschedulable PVCs
+          defaultReplicaCount: 1
+          # let Longhorn use the VM's root disk by default
+          createDefaultDiskLabeledNodes: false
+        persistence:
+          defaultClass: true
+          defaultClassReplicaCount: 1
+        longhornUI:
+          replicas: 1
+        longhornManager:
+          # reduce footprint on a 4 GiB VM
+          priorityClass: ""
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: longhorn-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true

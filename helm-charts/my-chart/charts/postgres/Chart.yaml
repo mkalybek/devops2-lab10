@@ -1,0 +1,5 @@
+apiVersion: v2
+name: postgres
+description: PostgreSQL on Longhorn PVC
+version: 0.1.0
+type: application

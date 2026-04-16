@@ -1,0 +1,5 @@
+apiVersion: v2
+name: nginx
+description: Minimal nginx demo app (replaces Keycloak from the reference)
+version: 0.1.0
+type: application

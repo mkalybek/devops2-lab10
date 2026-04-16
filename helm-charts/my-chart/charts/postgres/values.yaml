@@ -1,0 +1,24 @@
+image:
+  repository: postgres
+  tag: "16"
+
+replicas: 1
+
+persistence:
+  size: 1Gi
+  storageClass: longhorn
+
+resources:
+  requests:
+    memory: 256Mi
+    cpu: 100m
+  limits:
+    memory: 512Mi
+    cpu: 500m
+
+serviceAccount:
+  create: true
+
+# Credentials are provided by a Secret named `{{ .Release.Name }}-postgres`
+# created by bootstrap/03-create-secrets.sh. Not committed to git.
+existingSecret: true

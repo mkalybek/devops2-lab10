@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: longhorn-recurring-jobs
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/mkalybek/devops2-lab10.git
+    targetRevision: HEAD
+    path: longhorn
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: longhorn-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # the chart hasn't finished installing when this app first syncs, so the
+      # CRDs (RecurringJob, Setting) may be missing on the very first pass
+      - SkipDryRunOnMissingResource=true

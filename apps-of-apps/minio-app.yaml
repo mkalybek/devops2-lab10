@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: minio
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://charts.min.io
+    chart: minio
+    targetRevision: 5.4.0
+    helm:
+      values: |
+        mode: standalone
+        replicas: 1
+        existingSecret: minio-creds
+        persistence:
+          enabled: true
+          storageClass: longhorn
+          size: 2Gi
+        resources:
+          requests:
+            memory: 256Mi
+            cpu: 100m
+        consoleService:
+          type: NodePort
+          nodePort: 30090
+        buckets:
+          - name: longhorn-backups
+            policy: none
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: minio
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,13 @@
+# Override subchart defaults here. Keys match subchart names.
+
+postgres:
+  replicas: 1  # single-node lab: one replica
+  persistence:
+    size: 1Gi
+    storageClass: longhorn
+
+nginx:
+  replicas: 1
+  service:
+    type: NodePort
+    nodePort: 30080

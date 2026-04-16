@@ -1,0 +1,9 @@
+.DS_Store
+*.swp
+kubeconfig
+kubeconfig.yaml
+.env
+
+# the original multi-node reference lives in this repo locally but shouldn't
+# be pushed — it has its own .git pointing at Pocrov4chan/kuber-project.
+reference/
