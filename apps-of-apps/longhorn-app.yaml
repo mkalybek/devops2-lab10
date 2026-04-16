@@ -21,6 +21,11 @@ spec:
         defaultSettings:
           # single-node lab: one replica is enough and avoids unschedulable PVCs
           defaultReplicaCount: 1
+          # off-cluster backup target — Longhorn 1.11 reads these via the
+          # default BackupTarget CR. Credentials live in the
+          # `minio-backup-secret` Secret (created by bootstrap/03-create-secrets.sh).
+          backupTarget: "s3://longhorn-backups@us-east-1/"
+          backupTargetCredentialSecret: minio-backup-secret
         persistence:
           defaultClass: true
           defaultClassReplicaCount: 1

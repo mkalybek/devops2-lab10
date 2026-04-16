@@ -1,19 +1,19 @@
 # Verification flow
 
-Proves each grade tier actually works. Run from the Mac with `KUBECONFIG=$HOME/.kube/lab10` exported.
+Proves each grade tier works. Run from the Mac with `KUBECONFIG=$HOME/.kube/lab10` exported.
 
-## Edge — Longhorn + Postgres on a Longhorn PVC
+## Edge — Longhorn installed + Postgres on a Longhorn PVC
 
 ```bash
-kubectl get nodes                                 # 1 node, Ready
-kubectl get storageclass                          # longhorn (default)
-kubectl -n longhorn-system get pods               # all Running
-kubectl -n app get statefulset,pvc,pod            # helm-app-postgres ready
-kubectl -n app get pvc -o wide                    # RWO, Bound, StorageClass=longhorn
-kubectl -n longhorn-system get volumes            # 1 volume matching the PVC
+kubectl get nodes                                   # 1 node Ready
+kubectl get storageclass                            # longhorn (default)
+kubectl -n longhorn-system get pods                 # csi-*, instance-manager, etc. Running
+kubectl -n app get statefulset,pvc,pod              # helm-app-postgres-0 Ready
+kubectl -n app get pvc -o wide                      # RWO, Bound, StorageClass=longhorn
+kubectl -n longhorn-system get volumes              # attached, healthy
 ```
 
-Seed data:
+Seed some test data:
 ```bash
 kubectl -n app exec -it helm-app-postgres-0 -- psql -U keycloak -c "
   CREATE TABLE test_data (id serial, name text, created_at timestamp default now());
@@ -24,61 +24,70 @@ kubectl -n app exec -it helm-app-postgres-0 -- psql -U keycloak -c "
 
 ## Target — 5-min snapshots, drop + restore, PVC clone
 
+### Automated end-to-end demo
+
+[`bootstrap/demo-restore.sh`](../bootstrap/demo-restore.sh) runs everything
+below non-interactively:
+
+```bash
+./bootstrap/demo-restore.sh
+```
+
 ### Snapshots fire every 5 minutes
 
-`longhorn/snapshot-recurring-job.yaml` attaches to PVCs labeled with
-`recurring-job-group.longhorn.io/default: enabled`. The Postgres chart adds
-that label to its `volumeClaimTemplates`, so snapshots flow automatically.
+`longhorn/snapshot-recurring-job.yaml` is a `RecurringJob` attached to the
+`default` group; every Longhorn volume is in that group by default, so the
+Postgres PV gets picked up automatically.
 
 ```bash
 kubectl -n longhorn-system get recurringjob
 # NAME            GROUPS      TASK       CRON            RETAIN   CONCURRENCY
 # snapshot-5min   [default]   snapshot   */5 * * * *     5        1
+# backup-5min     [default]   backup     */5 * * * *     3        1
 
-# Longhorn UI → Volume → pvc-<uuid> → Snapshots (new one every ~5 min)
-kubectl -n longhorn-system port-forward svc/longhorn-frontend 9000:80
+kubectl -n longhorn-system get snapshot.longhorn.io
 ```
 
-### Drop data, restore from snapshot
+### Drop + restore (what `demo-restore.sh` does)
 
-Disable ArgoCD self-heal on the helm-app so it doesn't scale Postgres back up
-while we're swapping the volume underneath it:
+The StatefulSet must be scaled to 0 so the volume detaches before Longhorn
+will let you revert. `root-apps` also reconciles `helm-app` back to its
+declared state, so **both** Applications must have their `syncPolicy.automated`
+removed before we scale, otherwise ArgoCD scales Postgres back up mid-revert.
+
+The revert itself uses Longhorn's REST API (hit from an ephemeral curl pod
+inside `longhorn-system`):
+
+1. `scale sts/helm-app-postgres --replicas=0` and wait for volume to
+   become `detached`
+2. `POST /v1/volumes/$PV?action=attach {"hostId": NODE, "disableFrontend": true}`
+   — attaches in **maintenance mode** (no frontend = no filesystem mount,
+   safe to revert)
+3. `POST /v1/volumes/$PV?action=snapshotRevert {"name": SNAPSHOT}`
+4. `POST /v1/volumes/$PV?action=detach {}`
+5. `scale sts/helm-app-postgres --replicas=1`
+
+Verify the `test_data` rows are back:
+```bash
+kubectl -n app exec -it helm-app-postgres-0 -- psql -U keycloak -c "SELECT * FROM test_data;"
+```
+
+### Manual revert via the Longhorn UI (alternative)
 
 ```bash
-kubectl -n argocd patch application helm-app --type merge \
-  -p '{"spec":{"syncPolicy":null}}'
-
-# destroy table, confirm loss
-kubectl -n app exec -it helm-app-postgres-0 -- psql -U keycloak -c "DROP TABLE test_data;"
-
-# scale down the pod so the volume detaches
-kubectl -n app scale statefulset helm-app-postgres --replicas=0
-kubectl -n app wait --for=delete pod/helm-app-postgres-0 --timeout=2m
-
-# In Longhorn UI: Volume → this volume → Snapshots → pick one before the drop
-#                → Revert.  (Must be in "Detached" state to revert.)
-
-# Scale back up
-kubectl -n app scale statefulset helm-app-postgres --replicas=1
-kubectl -n app wait --for=condition=Ready pod/helm-app-postgres-0 --timeout=3m
-
-# Data is back
-kubectl -n app exec -it helm-app-postgres-0 -- psql -U keycloak -c "SELECT * FROM test_data;"
-
-# Re-enable GitOps
-kubectl -n argocd patch application helm-app --type merge \
-  -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
+kubectl -n longhorn-system port-forward svc/longhorn-frontend 9000:80
+# http://localhost:9000 → Volume → pvc-<uuid> → Snapshots → Revert
 ```
+
+The UI handles the maintenance-mode attach automatically. Still requires the
+StatefulSet to be scaled to 0 first.
 
 ### Clone PVC into a new PV
 
-Longhorn supports volume cloning via the CSI `dataSource` field. This creates
-a brand-new PV seeded from the current state of the source PVC — useful for
-spinning up a throwaway copy without touching production.
+Longhorn supports CSI volume cloning via the PVC `dataSource` field —
+satisfies the "make a new pv as copy of current" requirement:
 
-```bash
-SRC_PVC=$(kubectl -n app get pvc -o jsonpath='{.items[0].metadata.name}')
-cat <<EOF | kubectl apply -f -
+```yaml
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -92,41 +101,56 @@ spec:
       storage: 1Gi
   dataSource:
     kind: PersistentVolumeClaim
-    name: $SRC_PVC
-EOF
-
-kubectl -n app get pvc postgres-data-clone -w   # wait for Bound
-kubectl -n longhorn-system get volumes          # now 2 volumes
+    name: postgres-data-helm-app-postgres-0
 ```
 
-You now have a second PV on the same node with an independent copy of the
-Postgres data — verifying the "make a new pv as copy of current" requirement.
+```bash
+kubectl -n app get pvc                  # postgres-data-clone Bound to a new PV
+kubectl -n longhorn-system get volumes  # 2 postgres-sized volumes
+```
 
 ## Perfection — off-cluster backup to MinIO (S3)
 
+The Longhorn chart configures the backup target via
+`defaultSettings.backupTarget` in [apps-of-apps/longhorn-app.yaml](../apps-of-apps/longhorn-app.yaml).
+The credential secret (`minio-backup-secret` in `longhorn-system`) is
+created by [bootstrap/03-create-secrets.sh](../bootstrap/03-create-secrets.sh).
+
 ```bash
-# Longhorn backup target points at MinIO
-kubectl -n longhorn-system get setting backup-target backup-target-credential-secret
-# backup-target                         s3://longhorn-backups@us-east-1/
-# backup-target-credential-secret       minio-backup-secret
+kubectl -n longhorn-system get backuptarget default -o yaml | grep -E "backupTargetURL|credentialSecret|available"
+# backupTargetURL: s3://longhorn-backups@us-east-1/
+# credentialSecret: minio-backup-secret
+# available: true
+```
 
-# Backup RecurringJob
-kubectl -n longhorn-system get recurringjob backup-5min
+### Recurring backups fire every 5 minutes
 
-# After 5 minutes, backups appear in MinIO
+```bash
+kubectl -n longhorn-system get backup.longhorn.io
+kubectl -n longhorn-system get backupvolume.longhorn.io
+```
+
+### Browse the MinIO bucket
+
+```bash
 kubectl -n minio port-forward svc/minio-console 9090:9090
-# http://localhost:9090 — browse bucket "longhorn-backups"
-
-# In the Longhorn UI: Backup tab shows the volume's backups. Click one →
-# "Restore Latest Backup" → creates a brand-new volume from the off-cluster
-# backup, surviving even if the original PV is wiped.
+# http://localhost:9090
+# user/pass from minio-creds (default minio-admin / minio-change-me)
+# bucket "longhorn-backups" → backupstore/volumes/<hash>/<pvc>/ contains the
+# chunked .blk block files + backup_*.cfg metadata.
 ```
 
-## Useful one-liners
-
+Or list via the `mc` CLI:
 ```bash
-kubectl top nodes                                   # sanity on memory headroom
-kubectl describe nodes | grep -A5 'Allocated resources'
-kubectl -n argocd get applications                  # all Synced/Healthy
-kubectl -n longhorn-system get backups              # backup history
+MINIO_USER=$(kubectl -n minio get secret minio-creds -o jsonpath='{.data.rootUser}' | base64 -d)
+MINIO_PASS=$(kubectl -n minio get secret minio-creds -o jsonpath='{.data.rootPassword}' | base64 -d)
+kubectl -n minio run mc --rm -it --restart=Never --image=minio/mc:latest \
+  --env="MC_HOST_minio=http://${MINIO_USER}:${MINIO_PASS}@minio:9000" \
+  --command -- sh -c 'mc ls --recursive minio/longhorn-backups | head -30'
 ```
+
+### Restore from an off-cluster backup
+
+In the Longhorn UI: `Backup` tab → select the volume → `Restore Latest Backup`.
+This creates a brand-new volume seeded from the S3 backup — survives even if
+the original PV and its snapshots are wiped from the cluster.
