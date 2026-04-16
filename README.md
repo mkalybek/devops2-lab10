@@ -51,7 +51,7 @@ See [docs/verify.md](docs/verify.md) for the test flow (seed data â†’ snapshot â
 ```bash
 kubectl port-forward -n argocd          svc/argocd-server      8080:443
 kubectl port-forward -n longhorn-system svc/longhorn-frontend  9000:80
-kubectl port-forward -n minio           svc/minio-console      9090:9090
+kubectl port-forward -n minio           svc/minio-console      9090:9001
 ```
 
 | UI | URL | Credentials |

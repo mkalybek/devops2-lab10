@@ -133,7 +133,7 @@ kubectl -n longhorn-system get backupvolume.longhorn.io
 ### Browse the MinIO bucket
 
 ```bash
-kubectl -n minio port-forward svc/minio-console 9090:9090
+kubectl -n minio port-forward svc/minio-console 9090:9001
 # http://localhost:9090
 # user/pass from minio-creds (default minio-admin / minio-change-me)
 # bucket "longhorn-backups" → backupstore/volumes/<hash>/<pvc>/ contains the
