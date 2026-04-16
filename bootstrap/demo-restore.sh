@@ -37,6 +37,22 @@ lh_api() {
 PV=$(kubectl -n "$NS_APP" get pvc "$PVC" -o jsonpath='{.spec.volumeName}')
 hr "volume for ${PVC}: $PV"
 
+hr "clean up artifacts from a previous run (idempotent)"
+# Snapshot with the same name → Longhorn returns 500 on snapshotCreate.
+# PVC clone with the same name → kubectl apply is fine, but delete for a
+# clean re-run so the "new PV" step produces a fresh one.
+if kubectl -n "$NS_LH" get snapshot.longhorn.io "$SNAP_NAME" >/dev/null 2>&1; then
+  kubectl -n "$NS_LH" delete snapshot.longhorn.io "$SNAP_NAME" --wait=false || true
+fi
+if kubectl -n "$NS_LH" get backup.longhorn.io postgres-demo-backup >/dev/null 2>&1; then
+  kubectl -n "$NS_LH" delete backup.longhorn.io postgres-demo-backup --wait=false || true
+fi
+if kubectl -n "$NS_APP" get pvc postgres-data-clone >/dev/null 2>&1; then
+  kubectl -n "$NS_APP" delete pvc postgres-data-clone --wait=false || true
+fi
+# Give the finalizers a moment.
+sleep 3
+
 hr "seed test data"
 kubectl -n "$NS_APP" exec "${STS}-0" -- psql -U "$PG_USER" <<'SQL'
 CREATE TABLE IF NOT EXISTS test_data (id serial, name text, created_at timestamp default now());
@@ -87,7 +103,9 @@ for _ in $(seq 1 20); do
   sleep 2
 done
 kubectl -n "$NS_APP" scale statefulset "$STS" --replicas=1
-kubectl -n "$NS_APP" wait --for=condition=Ready pod/"${STS}-0" --timeout=3m
+# rollout status waits for the pod to both exist AND become Ready — unlike
+# `kubectl wait pod/...` which errors immediately if the pod doesn't exist yet.
+kubectl -n "$NS_APP" rollout status statefulset/"$STS" --timeout=3m
 
 hr "verify test_data is back"
 kubectl -n "$NS_APP" exec "${STS}-0" -- psql -U "$PG_USER" -c "SELECT * FROM test_data;"
